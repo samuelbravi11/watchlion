@@ -2,10 +2,18 @@
 #include <unistd.h>
 #include <pthread.h>
 #include <stdio.h>
-#include "../include/timer.h"
+#include <stdlib.h>
+#include <signal.h>
+#include "./include/timer.h"
 
 // controllo se altro processo sia vivo ogni 4 secondi
 #define FREQ_WTD 4
+#define FILE_CONFIG "/etc/watchlion.conf"
+#define PATH_SIGCOUNTER "./sigcounter/sigcounter"
+#define NAME_EXE_SIGCOUNTER "sigcounter"
+
+int sc_pid;
+int n_pid;
 
 void reportWatchlion() {
    // per ogni elemento nell'array condiviso guardo se
@@ -26,48 +34,50 @@ void setMaskWatchlion(sigset_t *mask) {
 int main(int argc, char *argv[]) {
    struct ParsedData data;
    pthread_t tid;
-   int mypid;
+   int my_pid;
    sigset_t mask;
    int sec = FREQ_WTD;
 
-   mypid = getpid();
+   my_pid = getpid();
 
    // ricevo solo segnali di tipo SIGUSR1 e decido cosa fare quando arrivano
    setSignalWatchlion(&mask);
    
-   // cerca il file di configurazione in /tmp/watchlion.init
-   // se non esiste errore
-
+   // cerca il file di configurazione in /etc/watchlion.init
+   if (access(FILE_CONFIG, R_OK) != 0) {
+      // se non esiste errore
+      perror("file di configurazione inesistente");
+      puts("path dove mettere il file: /etc/watchlion.conf");
+      exit(1);
+   }
    // se esiste:
    int fd_config;
-   fd_config = open("/tmp/watchlion.txt", O_READ);
+   fd_config = open(FILE_CONFIG, O_READ);
    if (parseFile(fd_config, &data)) {
       perror("Errore lettura file config");
       exit(0);
    }
 
+   n_pid = data.exe->count_exe;
+   sc_pid = startSigCounter(PATH_SIGCOUNTER, NAME_EXE_SIGCOUNTER, data.exe->count_exe, data.log->path_file);
+   startProcess(&data, my_pid, sigcounter_pid);
 
-   startProcess(&data, mypid);
-
-   
    puts("Avvio watchlion");
-   // aspetto solo il segnale da parte del timer per sbloccarmi --> SIGUSR1
-   // sigsuspend(mask_tim);
-
    while (1) {
-      puts("Avvio timer/thread");
+      puts("Mando SIGUSR1 a tutti");
+
       // ogni tot secondi mando signal al gruppo del padre
-      kill(-mypid, SIGUSR1);
+      kill(-my_pid, SIGUSR1);
       pthread_create(&tid, NULL, timer_thread, &sec);
+      checkStatus(); // TODO: crea thread che lo fa
       pthread_join(tid, NULL);
 
       // GUARDA MEMORIA CONDIVISA TRA PADRE E FIGLI
       // array: [ 1 1 1 1 0 1 1 1 0 1 ]
       // idx:     0 1 2 3 4 5 6 7 8 9
-      
-      // REPORT ARRAY
-      reportWatchlion();
    }
+   // REPORT ARRAY ALLA FINE
+   reportWatchlion();
 
    return 0;
 }

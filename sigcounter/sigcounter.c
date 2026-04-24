@@ -9,6 +9,8 @@
 #include "./include/counter.h"
 #include "./include/app.h"
 
+int fd_log;
+
 // inizializzazione sigation per signal custom
 void init_sigaction(struct sigaction *sa) {
     sa->sa_sigaction = handler;
@@ -39,14 +41,15 @@ int main(int argc, char *argv[]) {
     struct sigaction sa;
     sigset_t mask_base;
 
-    // .out + num_counter
-    if (argc != 2) {
+    // .out + num_counter + path_logfile
+    if (argc != 3) {
         perror("Formato: eseguibile + num mittenti");
-        puts("Esempio: ./a.out 5");
+        puts("Esempio: ./a.out 5 /home/usr/filelog.txt");
         exit(2);
     }
 
     // init
+    fd_log = open(argv[2], O_CREAT | O_WRITE);
     init_sigaction(&sa);
     queue_init();
     init_counter(atoi(argv[1]));

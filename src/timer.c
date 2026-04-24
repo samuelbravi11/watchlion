@@ -10,6 +10,4 @@ void *timer_thread(void *arg) {
 
 static void timer_elapsed(void) {
    printf("Timer scaduto!\n");
-   // invia sig a tutti
-   // chi non risponde
 }

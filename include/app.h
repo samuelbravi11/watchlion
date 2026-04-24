@@ -3,7 +3,8 @@
 
 #include "parsed_data.h"
 
-initProvvisoriaMem(struct ParsedData *pd);
-startProcess(struct ParsedData *data, int wtd_pid);
+int initProvvisoriaMem(struct ParsedData *pd);
+int startProcess(struct ParsedData *data, int wtd_pid);
+int startSigCounter(char *path_exe_sigcounter, char *name_exe_sigcounter, int n_pid);
 
 #endif

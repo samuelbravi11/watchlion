@@ -9,6 +9,9 @@ struct Counter {
     size_t items;
 };
 
+// global file for log
+extern int fd_log;
+
 static struct Counter *counter;
 
 void init_counter(const size_t num_process) {
@@ -53,6 +56,7 @@ int updateCounter(const struct Elem *e) {
 }
 
 void printReport(void) {
+    dup2(fd_log, STDOUT);
     for (int i = 0; i < (int)counter->items; i++) {
         printf("PID: %d\tN_SIGUSR1: %d\tN_SIGUSR2: %d\n",
             counter->process[i].pid, counter->process[i].n_usr1, counter->process[i].n_usr2);
