@@ -1,39 +1,39 @@
 /*
    FUNZIONI RACCOLTE PER L'UTENTE
 */
-#include "../include/watchdog.h"
-
-// memoria condivisa provvisoria
-extern int *S; // Status
-extern ()(* const BD)()[]; // Before Death
-extern ()(* const AD)()[]; // After Death
-extern char *args_BD[];  // argomenti da passare alla BD[i] func
-extern char *args_AD[];  // argomenti da passare alla AD[i] func
+#include <signal.h>
+#include <sys/types.h>
+#include <unistd.h>
+#include <stddef.h>
+#include "app.h"
+#include "../include/watchlion.h"
+#include "./utils/pid_hash_map.h"
 
 // astrae il codice da parte del client per impostare sigaction su un segnale che chiama una funzione
 // la funzione è personalizzabile dall'utente e può inserire più funzioni all'interno di essa (imAlive necessaria, ma anche *info) TODO
-void setWatchlion(struct sigaction *sa, (void)(* const f)(int, sigset_t, void *), int signo, bool mod) {
-   sa->sa_handler = f;
-   sa->sa_flags = SA_SIGINFO | SA_RESTART;
-   sigfillset(&sa->sa_mask); // tutti i segnali bloccati mentre sono dentro l'handler --> anche SIGUSR1
+void set_watchlion(struct sigaction *sa_notify, void (* const user_handler)(int, siginfo_t *, void *), int signo, bool mod) {
+   sa_notify->sa_sigaction = user_handler;
+   sa_notify->sa_flags = SA_SIGINFO | SA_RESTART;
+   sigfillset(&sa_notify->sa_mask); // tutti i segnali bloccati mentre sono dentro l'handler --> anche SIGUSR1
    if (mod) { // se mod == 1 allora ogni volta che arriva un segnale SIGUSR1 esco dall'handler e ci rientro
-      sigdelset(signo, &sa->sa_mask);
+      sigdelset(&sa_notify->sa_mask, signo);
    }
-   sigaction(signo, sa, NULL);
+   sigaction(signo, sa_notify, NULL);
 }
 
 // imposta 1 nell'array wtg di pid processi
-int imAlive(int pid_process) {
-   // nella memoria condivisa scrivo: A[pid_process] = 1
+bool im_alive(int pids_process) {
+   int idx_pid;
+   if ((idx_pid = get_idx_map_pid(pids_process)) == -1)
+      return false;
+   set_status_alive(idx_pid);
+   return true;
 }
 
-
-bool setBehavePostDead(()(* const f)(char *args[]), char *args[]) {
-   // nella memoria condivisa scrivo cosa fare se il processo muore
-   // F[pid_process] = 1 ad esempio dice di riavviare se processo non risponde
-}
-
-
-bool setBehaveBeforeCheck(()(* const f)(), char *args[]) {
-   // stessa cosa di sopra ma funzione che viene fatta prima di controllare A[0 ... n]
+bool set_behave_post_death(void (* const callback_post_death)(void *), void *context, int pids_process) {
+   int idx_pid;
+   if ((idx_pid = get_idx_map_pid(pids_process)) == -1)
+      return false;
+   set_callback_post_death(callback_post_death, context, idx_pid);
+   return true;
 }

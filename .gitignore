@@ -1,0 +1,6 @@
+/sigcounter/sigcounter
+/sigcounter/build
+
+*build/
+*lib/
+*bin/
