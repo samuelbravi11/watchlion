@@ -1,82 +1,106 @@
-#include <stdio.h>
-#include <unistd.h>
 #include <pthread.h>
-#include <stdio.h>
-#include <sys/types.h>
-#include <stdlib.h>
 #include <signal.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <sys/fcntl.h>
-#include "parsed_data.h"
-#include "parser.h"
-#include "../src/app.h"
-#include "../utils/timer.h"
-#include "../src/events/counter.h"
-#include "../src/events/queue_sig.h"
+#include <sys/mman.h>
+#include <sys/types.h>
+#include <unistd.h>
 
-// controllo se altro processo sia vivo ogni 4 secondi
+#include "app.h"
+#include "events/counter.h"
+#include "events/queue_sig.h"
+#include "parser/parser.h"
+#include "utils/timer.h"
+
 #define FREQ_WTD 4
 #define FILE_CONFIG "/etc/watchlion.conf"
-#define PATH_SIGCOUNTER "./sigcounter/sigcounter"
-#define NAME_EXE_SIGCOUNTER "sigcounter"
+#define SHM_NAME WATCHLION_DEFAULT_SHM_NAME
 
-void init_sigaction(struct sigaction *sa_notify, struct sigaction *sa_report) {
-   // sigusr1 usato per avvisare i child che implementeranno la loro versione di sa_notify
+static void init_sigaction(struct sigaction *sa_notify, struct sigaction *sa_report) {
    sa_notify->sa_handler = SIG_IGN;
+   sigemptyset(&sa_notify->sa_mask);
+   sa_notify->sa_flags = 0;
    sigaction(SIGUSR1, sa_notify, NULL);
-   
-   // ricevo solo SIGUSR2 per printReport
+
    sa_report->sa_handler = report_handler;
-   sigfillset(&sa_report->sa_mask); // blocco tutte le signal mentre eseguo report_handler
+   sigfillset(&sa_report->sa_mask);
    sa_report->sa_flags = 0;
    sigaction(SIGUSR2, sa_report, NULL);
 }
 
-int main(int argc, char *argv[]) {
+int main(void) {
    struct sigaction sa_notify, sa_report;
    struct ParsedData data;
    pthread_t tid;
-   pid_t *pids_process, my_pid;
-   int n_pid;
+   pid_t *pids_process = NULL;
    int sec = FREQ_WTD;
 
    init_sigaction(&sa_notify, &sa_report);
-   queue_init();
-   my_pid = getpid();
-   
-   // cerca il file di configurazione in /etc/watchlion.init
-   if (access(FILE_CONFIG, R_OK) != 0) {
-      // se non esiste errore
-      perror("file di configurazione inesistente");
-      puts("path dove mettere il file: /etc/watchlion.conf");
-      exit(1);
-   }
-   // se esiste il file di configurazione parso i dati
-   int fd_config;
-   fd_config = open(FILE_CONFIG, O_RDONLY);
-   if (parse_file(fd_config, &data)) {
-      perror("Errore lettura file config");
-      exit(0);
+
+   if (!queue_init()) {
+      perror("queue_init");
+      exit(EXIT_FAILURE);
    }
 
-   n_pid = data.exe.count_exe;
-   pids_process = start_all_process(&data);
-   init_pid_hash_map(pids_process, n_pid);
+   if (access(FILE_CONFIG, R_OK) != 0) {
+      perror("file di configurazione inesistente");
+      puts("path dove mettere il file: /etc/watchlion.conf");
+      exit(EXIT_FAILURE);
+   }
+
+   int fd_config = open(FILE_CONFIG, O_RDONLY);
+   if (fd_config == -1) {
+      perror("open config");
+      exit(EXIT_FAILURE);
+   }
+
+   if (parse_file(fd_config, &data) != 0) {
+      perror("Errore lettura file config");
+      close(fd_config);
+      exit(EXIT_FAILURE);
+   }
+   close(fd_config);
+
+   int n_pid = (int)data.exe.count_exe;
+   if (n_pid <= 0) {
+      fprintf(stderr, "Nessun eseguibile configurato\n");
+      exit(EXIT_FAILURE);
+   }
+
+   shm_unlink(SHM_NAME);
+   if (!init_shm(SHM_NAME, n_pid)) {
+      fprintf(stderr, "Errore inizializzazione shared memory\n");
+      exit(EXIT_FAILURE);
+   }
+
+   pids_process = start_all_process(&data, SHM_NAME);
+   if (!pids_process) {
+      fprintf(stderr, "Errore avvio processi figli\n");
+      exit(EXIT_FAILURE);
+   }
+
+   if (init_pid_hash_map(pids_process, (size_t)n_pid) != 0) {
+      fprintf(stderr, "Errore inizializzazione mappa PID\n");
+      exit(EXIT_FAILURE);
+   }
+
    init_stats(pids_process, n_pid);
-   init_shm("/watchlion", n_pid);
 
    puts("Avvio watchlion");
    while (1) {
       puts("Mando SIGUSR1 a tutti");
 
-      // ogni tot secondi mando signal al gruppo del padre
-      kill(-my_pid, SIGUSR1);
-      pthread_create(&tid, NULL, timer_thread, &sec);
-      pthread_join(tid, NULL);
-      check_status(pids_process, n_pid); // TODO: crea thread che lo fa
+      for (int i = 0; i < n_pid; i++) {
+         kill(pids_process[i], SIGUSR1);
+      }
 
-      // GUARDA MEMORIA CONDIVISA TRA PADRE E FIGLI
-      // array: [ 1 1 1 1 0 1 1 1 0 1 ]
-      // idx:     0 1 2 3 4 5 6 7 8 9
+      if (pthread_create(&tid, NULL, timer_thread, &sec) == 0) {
+         pthread_join(tid, NULL);
+      }
+
+      check_status(pids_process, n_pid);
+      check_events();
    }
 
    return 0;

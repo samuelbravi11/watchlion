@@ -1,118 +1,256 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <string.h>
+#include <unistd.h>
+
 #include "id_struct.h"
 #include "parsed_data.h"
+#include "parser.h"
 
-#define MAX_DIM_IN 256
+#define MAX_LINE 1024
 
-static int (* parser)(struct ParsedData *pd);
+static FILE *cfg = NULL;
+
+static char *xstrdup(const char *s) {
+    if (!s) {
+        return NULL;
+    }
+
+    size_t len = strlen(s) + 1;
+    char *copy = malloc(len);
+
+    if (!copy) {
+        return NULL;
+    }
+
+    memcpy(copy, s, len);
+    return copy;
+}
+
+static void init_parsed_data(struct ParsedData *pd) {
+    memset(pd, 0, sizeof(*pd));
+
+    pd->exe.name = NAME_EXE;
+    pd->log.name = NAME_LOG;
+    pd->tp_log.name = NAME_TYPE_LOG;
+}
+
+static char *trim_left(char *s) {
+    while (*s == ' ' || *s == '\t' || *s == '\n' || *s == '\r') {
+        s++;
+    }
+
+    return s;
+}
+
+static void trim_right(char *s) {
+    size_t len = strlen(s);
+
+    while (len > 0) {
+        char c = s[len - 1];
+
+        if (c == ' ' || c == '\t' || c == '\n' || c == '\r') {
+            s[len - 1] = '\0';
+            len--;
+        } else {
+            break;
+        }
+    }
+}
+
+static char *trim(char *s) {
+    s = trim_left(s);
+    trim_right(s);
+    return s;
+}
 
 char *getNameExeFromPath(const char *s, size_t len) {
-    // temp/boh/aaa/ses/a.out --> len = 34
-    int idx_name_exe = len-1;
-    for ( ; s[idx_name_exe] != '/'; idx_name_exe--) ;
-    // --> /a.out\0 --> a.out
-    idx_name_exe++;
-    return s+idx_name_exe;
+    (void)len;
+
+    if (!s) {
+        return NULL;
+    }
+
+    const char *last_slash = strrchr(s, '/');
+
+    if (!last_slash) {
+        return (char *)s;
+    }
+
+    return (char *)(last_slash + 1);
 }
 
-// exe: /temp/test/a.out /boh/beh/b.out
-int exeParser(struct ParsedData *pd) {
-    char str[MAX_DIM_IN];
-    int str_length = 0;
-    pd->exe.name = NAME_EXE;
-    scanf("%s", str);
-    str_length = strlen(str);
-    while (strcmp(str, ";") != 0) {
+static int parse_exe_line(struct ParsedData *pd, char *values) {
+    char *save_word = NULL;
+    char *word = strtok_r(values, " \t\r\n", &save_word);
+
+    while (word != NULL) {
+        char **new_paths = realloc(
+            pd->exe.path_exe,
+            (pd->exe.count_exe + 1) * sizeof(char *)
+        );
+
+        if (!new_paths) {
+            perror("realloc path_exe");
+            return -1;
+        }
+
+        pd->exe.path_exe = new_paths;
+
+        char **new_names = realloc(
+            pd->exe.name_exe,
+            (pd->exe.count_exe + 1) * sizeof(char *)
+        );
+
+        if (!new_names) {
+            perror("realloc name_exe");
+            return -1;
+        }
+
+        pd->exe.name_exe = new_names;
+
+        pd->exe.path_exe[pd->exe.count_exe] = xstrdup(word);
+
+        if (!pd->exe.path_exe[pd->exe.count_exe]) {
+            perror("strdup path_exe");
+            return -1;
+        }
+
+        char *name = getNameExeFromPath(word, strlen(word));
+        pd->exe.name_exe[pd->exe.count_exe] = xstrdup(name);
+
+        if (!pd->exe.name_exe[pd->exe.count_exe]) {
+            perror("strdup name_exe");
+            return -1;
+        }
+
         pd->exe.count_exe++;
-        realloc(&pd->exe.path_exe, pd->exe.count_exe * sizeof (MAX_DIM_IN));
-        pd->exe.path_exe[pd->exe.count_exe-1] = malloc(str_length); 
-        pd->exe.path_exe[pd->exe.count_exe-1] = str;    // TODO strdup
-        pd->exe.name_exe = malloc(str_length);
-        pd->exe.name_exe[pd->exe.count_exe - 1] = getNameExeFromPath(str, strlen(str));
-        scanf("%s", str);
+
+        word = strtok_r(NULL, " \t\r\n", &save_word);
     }
-    if (strcmp(str, ";") != 0) {
-        perror("Errore formato file config");
-        exit(0);
-    }
+
     return 0;
 }
 
-// log: /temp/log/log.txt write/append
-int logParser(struct ParsedData *pd) {
-    char end; 
-    pd->log.name = NAME_LOG;
-    scanf("%s %s %s", pd->log.path_file, pd->log.flag, end);
-    if (end != ';') {
-        perror("Errore formato file config");
-        exit(0);
+static int parse_log_line(struct ParsedData *pd, char *values) {
+    char *save_word = NULL;
+
+    char *path = strtok_r(values, " \t\r\n", &save_word);
+    char *flag = strtok_r(NULL, " \t\r\n", &save_word);
+
+    if (!path || !flag) {
+        fprintf(stderr, "Errore LOG: formato corretto: LOG: path flag\n");
+        return -1;
     }
+
+    pd->log.path_file = xstrdup(path);
+    pd->log.flag = xstrdup(flag);
+
+    if (!pd->log.path_file || !pd->log.flag) {
+        perror("strdup log");
+        return -1;
+    }
+
     return 0;
 }
 
-// type_log: signal end_child
-int typeLogParser(struct ParsedData *pd) {
-    char str[MAX_DIM_IN];
-    int str_length = 0;
-    
-    pd->tp_log.name = NAME_TYPE_LOG;
-    scanf("%s", str);
-    while (strcmp(str, ";") != 0) {
-        if (strcmp(str, "signal"))
+static int parse_type_log_line(struct ParsedData *pd, char *values) {
+    char *save_word = NULL;
+    char *word = strtok_r(values, " \t\r\n", &save_word);
+
+    while (word != NULL) {
+        if (strcmp(word, "signal") == 0) {
             pd->tp_log.sig = true;
-        else if (strcmp(str, "end_child"))
+        } else if (strcmp(word, "end_child") == 0) {
             pd->tp_log.end_child = true;
-        scanf("%s", str);
+        } else {
+            fprintf(stderr, "Errore TYPE_LOG: valore sconosciuto '%s'\n", word);
+            return -1;
+        }
+
+        word = strtok_r(NULL, " \t\r\n", &save_word);
     }
+
     return 0;
 }
 
-int handle_parse_by_struct_id(enum IdStruct id) {
-    switch (id) {
-    case 1:
-        parser = exeParser;
-        break;
-    case 2:
-        parser = logParser;
-        break;
-    case 3:
-        parser = typeLogParser;
-        break;
-    default:
+static int parse_line(struct ParsedData *pd, char *line) {
+    char *save_section = NULL;
+
+    char *section = strtok_r(line, ":", &save_section);
+    char *values = strtok_r(NULL, "", &save_section);
+
+    if (!section) {
         return 0;
     }
-    return id;
-}
 
-static enum IdStruct getIdStruct(char *s) {
-    if (strcmp(s, "NAME_EXE") == 0)
-        return ID_EXE;
-    if (strcmp(s, "NAME_LOG") == 0)
-        return ID_LOG;
-    if (strcmp(s, "NAME_TYPE_LOG") == 0)
-        return ID_TYPE_LOG;
-    return ID_ERROR;
-}
+    section = trim(section);
 
+    if (section[0] == '\0') {
+        return 0;
+    }
+
+    if (section[0] == '#') {
+        return 0;
+    }
+
+    if (!values) {
+        fprintf(stderr, "Errore: sezione '%s' senza valori\n", section);
+        return -1;
+    }
+
+    values = trim(values);
+
+    if (strcmp(section, "EXE") == 0 || strcmp(section, NAME_EXE) == 0) {
+        return parse_exe_line(pd, values);
+    }
+
+    if (strcmp(section, "LOG") == 0 || strcmp(section, NAME_LOG) == 0) {
+        return parse_log_line(pd, values);
+    }
+
+    if (strcmp(section, "TYPE_LOG") == 0 || strcmp(section, NAME_TYPE_LOG) == 0) {
+        return parse_type_log_line(pd, values);
+    }
+
+    fprintf(stderr, "Errore: sezione sconosciuta '%s'\n", section);
+    return -1;
+}
 
 int parse_file(int fd_i, struct ParsedData *pa) {
-    if (dup2(fd_i, stdin) == -1) {
-        perror("Error reading file init");
-        return 1;
+    if (fd_i < 0 || !pa) {
+        return -1;
     }
-    char *name_struct;
-    enum IdStruct id;
-    int status;
-    while (scanf("%s", name_struct) > 0) {
-        id = getIdStruct(name_struct);
-        if (!handle_parse_by_struct_id(id))
+
+    init_parsed_data(pa);
+
+    int fd_copy = dup(fd_i);
+
+    if (fd_copy == -1) {
+        perror("dup config fd");
+        return -1;
+    }
+
+    cfg = fdopen(fd_copy, "r");
+
+    if (!cfg) {
+        perror("fdopen config fd");
+        close(fd_copy);
+        return -1;
+    }
+
+    char line[MAX_LINE];
+
+    while (fgets(line, sizeof(line), cfg) != NULL) {
+        if (parse_line(pa, line) != 0) {
+            fclose(cfg);
+            cfg = NULL;
             return -1;
-        // if there is an error during parser return
-        if (status = parser(pa))
-            return status;
+        }
     }
+
+    fclose(cfg);
+    cfg = NULL;
+
     return 0;
 }
